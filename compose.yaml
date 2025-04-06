@@ -8,7 +8,7 @@ services:
       test: ["CMD-SHELL", "curl --fail http://localhost:8000/healthcheck || exit 1"]
     command: uvicorn --factory whisperx_api_server.main:create_app
     ports:
-      - 8000:8000
+      - 8090:8000
     volumes:
       - hugging_face_cache:/root/.cache/huggingface
       - torch_cache:/root/.cache/torch
