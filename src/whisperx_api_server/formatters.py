@@ -46,6 +46,28 @@ def handle_whisperx_format(transcript, writer_class, options):
 
     return output.get_output()
 
+def format_verbose_json(transcript):
+
+    segments = transcript["segments"]["segments"]
+    word_segments = transcript["segments"]["word_segments"]
+    
+    transformed_segments = []
+    for idx, segment in enumerate(segments, start=1):
+        new_segment = {"id": idx}
+        new_segment.update(segment)
+        transformed_segments.append(new_segment)
+    
+    new_transcript = {
+        "task": transcript["task"],
+        "language": transcript["language"],
+        "duration": transcript["duration"],
+        "text": transcript["text"],
+        "words": word_segments,
+        "segments": transformed_segments
+    }
+    
+    return new_transcript
+
 def format_transcription(transcript, format, **kwargs) -> Response:
     """
     Format a transcript into a given format and return a FastAPI Response object.
@@ -67,7 +89,7 @@ def format_transcription(transcript, format, **kwargs) -> Response:
         response_data = {"text": transcript.get("text", "")}
         return JSONResponse(content=response_data, media_type=MediaType.APPLICATION_JSON)
     elif format == "verbose_json":
-        return JSONResponse(content=transcript, media_type=MediaType.APPLICATION_JSON)
+        return format_verbose_json(transcript)
     elif format == "vtt_json":
         transcript["vtt_text"] = handle_whisperx_format(transcript, WriteVTT, options)
         return JSONResponse(content=transcript, media_type=MediaType.APPLICATION_JSON)
