@@ -1,6 +1,5 @@
 import logging
 import uuid
-import functools
 from .models import handle_default_openai_model
 from fastapi import (
     APIRouter,
@@ -10,19 +9,18 @@ from fastapi import (
     Request,
     status
 )
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Literal, Annotated
+from typing import Literal, Annotated, Optional
 from pydantic import AfterValidator
 import time
-
-
 import whisperx_api_server.transcriber as transcriber
 from whisperx_api_server.dependencies import ConfigDependency
 from whisperx_api_server.formatters import format_transcription
 from whisperx_api_server.config import (
     Language,
     ResponseFormat,
+    MediaType,
 )
 from whisperx_api_server.models import (
     load_model_instance,
@@ -186,7 +184,7 @@ async def transcribe_audio(
     total_time = time.time() - start_time
     logger.info(f"Request ID: {request_id} - Transcription process took {total_time:.2f} seconds")
 
-    return format_transcription(transcription, response_format, highlight_words=highlight_words)
+    return format_transcription(transcription, response_format)
 
 """
 OpenAI-like endpoint to translate audio files using the Whisper ASR model.
@@ -257,3 +255,130 @@ async def translate_audio(
     logger.info(f"Request ID: {request_id} - Translation process took {total_time:.2f} seconds")
 
     return format_transcription(translation, response_format)
+
+"""
+Endpoint to align transcript with audio
+
+Args:
+    request (Request): The HTTP request object.
+    file (UploadFile): The audio file to align with the transcript.
+    transcript (str): The text transcript to align with the audio.
+    language_code (Language): The language of the transcript. Defaults to "en".
+    align_model (str): Name of phoneme-level ASR model to do alignment. Default is None.
+    interpolate_method (str): Method to assign timestamps to non-aligned words. Defaults to "nearest".
+    return_char_alignments (bool): Whether to return character-level alignments in the output. Defaults to False.
+    response_format (ResponseFormat): The response format to use. Defaults to "json".
+
+Returns:
+    Response: The aligned transcript with timing information.
+"""
+@router.post(
+    "/v1/audio/align",
+    description="Align transcript with audio using WhisperX alignment models",
+    tags=["Alignment"],
+)
+async def align_audio(
+    config: ConfigDependency,
+    request: Request,
+    file: UploadFile,
+    transcript: Annotated[str, Form()],
+    language_code: Annotated[Language, Form()] = "en",
+    align_model: Annotated[str, Form()] = None,
+    interpolate_method: Annotated[str, Form()] = "nearest",
+    return_char_alignments: Annotated[bool, Form()] = False,
+    response_format: Annotated[ResponseFormat, Form()] = None,
+) -> Response:
+    _, _, response_format = apply_defaults(config, None, None, response_format)
+    request_id = request.state.request_id
+    logger.debug(f"Request ID: {request_id} - Received alignment request")
+    
+    start_time = time.time()
+    logger.debug(f"Request ID: {request_id} - Aligning {file.filename} with parameters: \
+        language_code: {language_code}, \
+        align_model: {align_model}, \
+        interpolate_method: {interpolate_method}, \
+        return_char_alignments: {return_char_alignments}")
+    
+    try:
+        device = config.whisper.inference_device.value
+        result = await transcriber.align_whisper_output(
+            transcript=transcript,
+            audio_file=file,
+            language_code=language_code,
+            request_id=request_id,
+            device=device,
+            align_model=align_model,
+            interpolate_method=interpolate_method,
+            return_char_alignments=return_char_alignments
+        )
+    except Exception as e:
+        logger.exception(f"Request ID: {request_id} - Alignment failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred during alignment: {str(e)}"
+        ) from e
+    
+    total_time = time.time() - start_time
+    logger.info(f"Request ID: {request_id} - Alignment process took {total_time:.2f} seconds")
+    
+    return format_transcription(result, response_format)
+
+"""
+Endpoint for speaker diarization of audio
+
+Args:
+    request (Request): The HTTP request object.
+    file (UploadFile): The audio file to perform speaker diarization on.
+    min_speakers (int): Minimum number of speakers to detect. Default is None.
+    max_speakers (int): Maximum number of speakers to detect. Default is None.
+    response_format (ResponseFormat): The response format to use. Defaults to "json".
+
+Returns:
+    Response: The diarization result with speaker segments.
+"""
+@router.post(
+    "/v1/audio/diarize",
+    description="Perform speaker diarization on audio using WhisperX diarization models",
+    tags=["Diarization"],
+)
+async def diarize_audio(
+    config: ConfigDependency,
+    request: Request,
+    file: UploadFile,
+    min_speakers: Annotated[Optional[int], Form()] = None,
+    max_speakers: Annotated[Optional[int], Form()] = None,
+    response_format: Annotated[ResponseFormat, Form()] = None,
+) -> Response:
+    _, _, response_format = apply_defaults(config, None, None, response_format)
+    request_id = request.state.request_id
+    logger.debug(f"Request ID: {request_id} - Received diarization request")
+    
+    start_time = time.time()
+    logger.debug(f"Request ID: {request_id} - Diarizing {file.filename} with parameters: \
+        min_speakers: {min_speakers}, \
+        max_speakers: {max_speakers}")
+    
+    try:
+        device = config.whisper.inference_device.value
+        result = await transcriber.diarize(
+            audio_file=file,
+            request_id=request_id,
+            device=device,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers
+        )
+    except Exception as e:
+        logger.exception(f"Request ID: {request_id} - Diarization failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred during diarization: {str(e)}"
+        ) from e
+    
+    total_time = time.time() - start_time
+    logger.info(f"Request ID: {request_id} - Diarization process took {total_time:.2f} seconds")
+    
+    # For most formats, we fall back to JSON since other formats like SRT don't make sense for diarization only
+    return JSONResponse(
+        content=result,
+        media_type=MediaType.APPLICATION_JSON
+    )
