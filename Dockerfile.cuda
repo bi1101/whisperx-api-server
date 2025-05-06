@@ -38,6 +38,7 @@ FROM base AS runtime
 COPY --from=python-env /workspace/venv /workspace/venv
 
 ENV PATH="/workspace/venv/bin:$PATH"
+ENV LD_LIBRARY_PATH="/workspace/venv/lib/python3.*/site-packages/nvidia/cudnn/lib:/workspace/venv/lib/python3.*/site-packages/torch/lib:/workspace/venv/lib/python3.*/site-packages/ctranslate2.libs:${LD_LIBRARY_PATH}"
 
 WORKDIR /workspace
 
